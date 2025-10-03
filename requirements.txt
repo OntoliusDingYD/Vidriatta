@@ -1,3 +1,7 @@
 flask
 ultralytics
 boto3
+redis
+celery[redis]
+flask-limiter
+gunicorn
