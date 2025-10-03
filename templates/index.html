@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Vidriatta - Detection</title>
+</head>
+<body>
+    <h2>Upload an image for detection</h2>
+    <form id="upload-form" enctype="multipart/form-data">
+        <input type="file" name="image" required>
+        <button type="submit">Upload</button>
+    </form>
+
+    <h3>Detection Result Image:</h3>
+    <img id="result-image" src="" alt="No image yet" width="500" style="display:none;">
+
+    <h3>Detection Result Data:</h3>
+    <pre id="result-box">No result yet.</pre>
+
+    <script>
+        document.getElementById("upload-form").addEventListener("submit", async function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const response = await fetch("/predict", {
+                method: "POST",
+                body: formData
+            });
+            const result = await response.json();
+
+            document.getElementById("result-box").textContent = JSON.stringify(result.detections, null, 2);
+
+            const imgElement = document.getElementById("result-image");
+            imgElement.src = result.output_image_url + "?t=" + new Date().getTime(); // 防缓存
+            imgElement.style.display = "block";
+        });
+    </script>
+</body>
+</html>
+
