@@ -2,7 +2,7 @@ import os
 import io
 import uuid
 import hashlib
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
 import boto3
 import botocore
@@ -119,6 +119,10 @@ def task_status(task_id):
         return jsonify({"state": state, "error": str(res.info)}), 500
     else:
         return jsonify({"state": state}), 200
+
+@app.route("/", methods=["GET"])
+def index():
+    return render_template("index.html")
 
 @app.route("/healthz", methods=["GET"])
 def healthz():
