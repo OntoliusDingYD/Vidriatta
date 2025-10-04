@@ -31,6 +31,13 @@ config = botocore.config.Config(
 )
 s3 = session.client("s3", config=config)
 
+def presign(key, expire=3600):
+    return s3.generate_presigned_url(
+        ClientMethod="get_object",
+        Params={"Bucket": BUCKET_NAME, "Key": key},
+        ExpiresIn=expire,
+    )
+
 # Redis：做幂等/缓存
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 limiter = Limiter(
@@ -113,8 +120,9 @@ def task_status(task_id):
         sha = rdb.get(_task_key(task_id))
         if sha:
             rdb.setex(_result_key(sha), 24*3600, str(data))   # 结果缓存1天
-            rdb.delete(_inflight_key(sha))                    # 清理进行中
-        return jsonify({"state": state, **data}), 200
+            rdb.delete(_inflight_key(sha)) 
+        url = presign(data["output_s3_key"])    # 结果图预签名
+        return jsonify({"state": state, "presigned_url": url, **data}), 200
     elif state == "FAILURE":
         return jsonify({"state": state, "error": str(res.info)}), 500
     else:
