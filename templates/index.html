@@ -1,38 +1,126 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Vidriatta - Detection</title>
+  <meta charset="utf-8" />
+  <title>Vidriatta - Detection (Async)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; max-width: 800px; margin: 40px auto; }
+    #status { margin: 8px 0; color: #555; }
+    #result-image { display: none; max-width: 100%; border: 1px solid #ddd; padding: 4px; }
+    pre { background: #f7f7f7; padding: 12px; overflow: auto; }
+    button[disabled] { opacity: 0.6; cursor: not-allowed; }
+  </style>
 </head>
 <body>
-    <h2>Upload an image for detection</h2>
-    <form id="upload-form" enctype="multipart/form-data">
-        <input type="file" name="image" required>
-        <button type="submit">Upload</button>
-    </form>
+  <h2>Upload an image for detection</h2>
+  <form id="upload-form" enctype="multipart/form-data">
+    <input type="file" name="image" accept="image/*" required />
+    <button id="submit-btn" type="submit">Upload</button>
+  </form>
 
-    <h3>Detection Result Image:</h3>
-    <img id="result-image" src="" alt="No image yet" width="500" style="display:none;">
+  <div id="status">Idle.</div>
 
-    <h3>Detection Result Data:</h3>
-    <pre id="result-box">No result yet.</pre>
+  <h3>Detection Result Image:</h3>
+  <img id="result-image" alt="No image yet">
 
-    <script>
-        document.getElementById("upload-form").addEventListener("submit", async function(e) {
-            e.preventDefault();
-            const formData = new FormData(this);
-            const response = await fetch("/predict", {
-                method: "POST",
-                body: formData
-            });
-            const result = await response.json();
+  <h3>Detection Result Data:</h3>
+  <pre id="result-box">No result yet.</pre>
 
-            document.getElementById("result-box").textContent = JSON.stringify(result.detections, null, 2);
+  <script>
+    const form = document.getElementById("upload-form");
+    const statusEl = document.getElementById("status");
+    const resultImg = document.getElementById("result-image");
+    const resultBox = document.getElementById("result-box");
+    const submitBtn = document.getElementById("submit-btn");
 
-            const imgElement = document.getElementById("result-image");
-            imgElement.src = result.output_image_url + "?t=" + new Date().getTime(); // 防缓存
-            imgElement.style.display = "block";
-        });
-    </script>
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      submitBtn.disabled = true;
+      resultImg.style.display = "none";
+      resultBox.textContent = "No result yet.";
+      statusEl.textContent = "Uploading...";
+
+      try {
+        const formData = new FormData(form);
+        const resp = await fetch("/predict", { method: "POST", body: formData });
+        if (!resp.ok) {
+          const err = await safeJson(resp);
+          throw new Error(`Upload failed (${resp.status}): ${JSON.stringify(err)}`);
+        }
+        const data = await resp.json();
+
+        // 命中缓存（后端应在 cached=true 时一并返回 presigned_url 和 detections）
+        if (data.cached) {
+          showResult(data.presigned_url, data.detections);
+          statusEl.textContent = "Cached hit. Done.";
+          return;
+        }
+
+        // 进行中任务复用（返回 task_id + inflight=true）
+        if (data.inflight && data.task_id) {
+          statusEl.textContent = "Task is already running. Polling...";
+          await pollTask(data.task_id);
+          return;
+        }
+
+        // 正常新任务（返回 task_id）
+        if (data.task_id) {
+          statusEl.textContent = "Queued. Polling for result...";
+          await pollTask(data.task_id);
+          return;
+        }
+
+        throw new Error("Unexpected response from /predict");
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = String(err);
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    async function pollTask(taskId) {
+      // 线性退避（也可换指数退避），最多轮询 ~30 次
+      let attempts = 0;
+      let delayMs = 800;
+
+      while (attempts < 30) {
+        attempts++;
+        const r = await fetch(`/tasks/${taskId}`, { method: "GET" });
+        const body = await safeJson(r);
+
+        // 成功：应包含 presigned_url + detections
+        if (body && body.state === "SUCCESS") {
+          showResult(body.presigned_url, body.detections);
+          statusEl.textContent = "Success.";
+          return;
+        }
+
+        if (body && body.state === "FAILURE") {
+          throw new Error(`Task failed: ${body.error || "Unknown error"}`);
+        }
+
+        statusEl.textContent = `State: ${body.state || "PENDING"} (attempt ${attempts})`;
+        await sleep(delayMs);
+        delayMs = Math.min(delayMs + 400, 4000); // 上限 4s
+      }
+
+      throw new Error("Polling timeout.");
+    }
+
+    function showResult(url, detections) {
+      if (url) {
+        resultImg.src = url;
+        resultImg.style.display = "block";
+      }
+      resultBox.textContent = JSON.stringify(detections || [], null, 2);
+    }
+
+    function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+    async function safeJson(resp) {
+      try { return await resp.json(); } catch (_) { return { raw: await resp.text() }; }
+    }
+  </script>
 </body>
 </html>
-

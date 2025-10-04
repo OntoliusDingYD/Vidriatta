@@ -1,5 +1,6 @@
 import os
 import io
+import json
 import uuid
 import hashlib
 from flask import Flask, request, jsonify, render_template
@@ -50,20 +51,18 @@ limiter = Limiter(
 rdb = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 
 # key 约定：哈希 -> 结果缓存
-def _hash_key(sha):
-    return f"img:{sha}:result"     # 值存 JSON：{"task_id"或"output_s3_key", "detections"...}
 def _task_key(task_id):
     return f"task:{task_id}:sha"   # task_id -> sha，方便查询/清理
 def _inflight_key(sha):    
     return f"img:{sha}:inflight"  # 值: task_id
 def _result_key(sha):      
-    return f"img:{sha}:result"    # 值: JSON(string)
+    return f"img:{sha}:result"    # 值: JSON(string)：{"task_id"或"output_s3_key", "detections"...}
 
 @app.route("/predict", methods=["POST"])
 @limiter.limit("10/minute")
 def predict():
     """
-    接收图片 -> 计算sha256（幂等去重）-> 如已有缓存直接返回
+    接收图片 -> 计算sha256(幂等去重)-> 如已有缓存直接返回
              -> 否则上传S3 -> 投递Celery -> 返回 task_id
     """
     file = request.files.get("image")
@@ -75,11 +74,13 @@ def predict():
     sha = hashlib.sha256(buf).hexdigest()
 
     # 命中缓存：直接返回已生成的结果（免重复推理）
-    cache = rdb.get(_hash_key(sha))
+    cache = rdb.get(_result_key(sha))
     if cache:
+        data = json.loads(cache)
         # cache 为 JSON 字符串，直接返回即可（里头包含 output_s3_key/detections）
-        return jsonify({"cached": True, **eval(cache)}), 200
-    
+        url = presign(data["output_s3_key"])  # 结果图预签名
+        return jsonify({"cached": True, "presigned_url": url, **data}), 200
+
     # 命中进行中任务：返回 task_id（前端可继续轮询）
     existing_task = rdb.get(_inflight_key(sha))
     if existing_task:
@@ -119,7 +120,7 @@ def task_status(task_id):
         data = res.get()
         sha = rdb.get(_task_key(task_id))
         if sha:
-            rdb.setex(_result_key(sha), 24*3600, str(data))   # 结果缓存1天
+            rdb.setex(_result_key(sha), 24*3600, json.dumps(data))   # 结果缓存1天
             rdb.delete(_inflight_key(sha)) 
         url = presign(data["output_s3_key"])    # 结果图预签名
         return jsonify({"state": state, "presigned_url": url, **data}), 200
